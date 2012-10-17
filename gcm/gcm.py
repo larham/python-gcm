@@ -1,58 +1,37 @@
+# from https://github.com/geeknam/python-gcm on 30 aug 2012
 import urllib
 import urllib2
 import json
-from collections import defaultdict
 import time
 import random
+from django.utils.encoding import smart_str
 
 GCM_URL = 'https://android.googleapis.com/gcm/send'
 
 
 class GCMException(Exception): pass
-class GCMMalformedJsonException(GCMException): pass
-class GCMConnectionException(GCMException): pass
-class GCMAuthenticationException(GCMException): pass
-class GCMTooManyRegIdsException(GCMException): pass
-class GCMNoCollapseKeyException(GCMException): pass
-class GCMInvalidTtlException(GCMException): pass
+class GCMNoRetryException(Exception): pass
+class GCMRetriableException(Exception): pass
+class GCMMalformedJsonException(GCMNoRetryException): pass
+class GCMConnectionException(GCMRetriableException): pass
+class GCMAuthenticationException(GCMNoRetryException): pass
+class GCMTooManyRegIdsException(GCMNoRetryException): pass
+class GCMNoCollapseKeyException(GCMNoRetryException): pass
+class GCMInvalidTtlException(GCMNoRetryException): pass
 
 # Exceptions from Google responses
-class GCMMissingRegistrationException(GCMException): pass
-class GCMMismatchSenderIdException(GCMException): pass
-class GCMNotRegisteredException(GCMException): pass
-class GCMMessageTooBigException(GCMException): pass
-class GCMInvalidRegistrationException(GCMException): pass
-class GCMUnavailableException(GCMException): pass
-
-
-# TODO: Refactor this to be more human-readable
-def group_response(response, registration_ids, key):
-    # Pair up results and reg_ids
-    mapping = zip(registration_ids, response['results'])
-    # Filter by key
-    filtered = filter(lambda x: key in x[1], mapping)
-    # Only consider the value in the dict
-    tupled = [(s[0], s[1][key]) for s in filtered]
-    # Grouping of errors and mapping of ids
-    if key is 'registration_id':
-        grouping = {}
-        for k, v in tupled:
-            grouping[k] = v
-    else:
-        grouping = defaultdict(list)
-        for k, v in tupled:
-            grouping[v].append(k)
-
-    if len(grouping) == 0:
-        return
-    return grouping
-
+class GCMMissingRegistrationException(GCMNoRetryException): pass
+class GCMMismatchSenderIdException(GCMNoRetryException): pass
+class GCMNotRegisteredException(GCMNoRetryException): pass
+class GCMMessageTooBigException(GCMNoRetryException): pass
+class GCMInvalidRegistrationException(GCMNoRetryException): pass
+class GCMUnavailableException(GCMRetriableException): pass
 
 class GCM(object):
 
     # Timeunit is milliseconds.
-    BACKOFF_INITIAL_DELAY = 1000;
-    MAX_BACKOFF_DELAY = 1024000;
+    BACKOFF_INITIAL_DELAY_MS = 1000
+    MAX_BACKOFF_DELAY_MS = 1024000
 
     def __init__(self, api_key):
         self.api_key = api_key
@@ -125,16 +104,19 @@ class GCM(object):
             response = urllib2.urlopen(req).read()
         except urllib2.HTTPError as e:
             if e.code == 400:
-                raise GCMMalformedJsonException("The request could not be parsed as JSON")
+                raise GCMMalformedJsonException("JSON could not be parsed (400)")
             elif e.code == 401:
-                raise GCMAuthenticationException("There was an error authenticating the sender account")
-            elif e.code == 503:
-                raise GCMUnavailableException("GCM service is unavailable")
-        except urllib2.URLError as e:
-            raise GCMConnectionException("There was an internal error in the GCM server while trying to process the request")
+                raise GCMAuthenticationException("Authentication error (401)")
+            elif e.code == 503 or e.code == 500:
+                raise GCMUnavailableException("Unavailable (%d)" % e.code)
+            else:
+                raise GCMConnectionException("Http error connecting to GCM: %s" % smart_str(e))
+        except IOError as e:
+            raise GCMConnectionException("IOError attempting GCM push: %s" % smart_str(e))
 
-        if is_json:
-            response = json.loads(response)
+        except Exception as e:
+            raise GCMConnectionException("Error attempting GCM push: %s" % smart_str(e))
+
         return response
 
     def raise_error(self, error):
@@ -143,18 +125,25 @@ class GCM(object):
         elif error == 'Unavailable':
             # Plain-text requests will never return Unavailable as the error code.
             # http://developer.android.com/guide/google/gcm/gcm.html#error_codes
-            raise GCMUnavailableException("Server unavailable. Resent the message")
+            raise GCMUnavailableException("Server unavailable. Resend the message")
         elif error == 'NotRegistered':
             raise GCMNotRegisteredException("Registration id is not valid anymore")
         elif error == 'MismatchSenderId':
             raise GCMMismatchSenderIdException("A Registration ID is tied to a certain group of senders")
         elif error == 'MessageTooBig':
-            raise GCMMessageTooBigException("Message can't exceed 4096 bytes")
+            raise GCMMessageTooBigException("Message exceeds 4096 bytes")
+        else:
+            raise GCMException(smart_str(error))
 
     def handle_plaintext_response(self, response):
+        if not response:
+            raise GCMException("no response")
 
         # Split response by line
         response_lines = response.strip().split('\n')
+        if len(response_lines) == 0:
+            raise GCMException("no response")
+
         # Split the first line by =
         key, value = response_lines[0].split('=')
         if key == 'Error':
@@ -165,29 +154,19 @@ class GCM(object):
             else:
                 return
 
-    def handle_json_response(self, response, registration_ids):
-        errors = group_response(response, registration_ids, 'error')
-        canonical = group_response(response, registration_ids, 'registration_id')
-
-        info = {}
-        if errors:
-            info.update({'errors': errors})
-        if canonical:
-            info.update({'canonical': canonical})
-
-        return info
-
     def extract_unsent_reg_ids(self, info):
         if 'errors' in info and 'Unavailable' in info['errors']:
             return info['errors']['Unavailable']
         else:
             return []
 
-    def plaintext_request(self, registration_id, data=None, collapse_key=None,
-                            delay_while_idle=False, time_to_live=None, retries=5):
+    def request_plaintext(self, registration_id, data=None, collapse_key=None,
+                            delay_while_idle=False, time_to_live=None, tries=5):
         """
-        Makes a plaintext request to GCM servers
+        Makes a plaintext request to GCM servers, including a (blocking) retry loop that
+        can take up to 17 minutes with default 4 retries.
 
+        :param tries number of attempts.  0 will raise exception. 1 for one attempt but no retries, etc.
         :param registration_id: string of the registration id
         :param data: dict mapping of key-value pairs of messages
         :return dict of response body from Google including multicast_id, success, failure, canonical_ids, etc
@@ -197,59 +176,189 @@ class GCM(object):
         if not registration_id:
             raise GCMMissingRegistrationException("Missing registration_id")
 
+        if tries == 0:
+            raise GCMException('number of tries 0: why did you call this?')
+
         payload = self.construct_payload(
             registration_id, data, collapse_key,
             delay_while_idle, time_to_live, False
         )
 
         attempt = 0
-        backoff = self.BACKOFF_INITIAL_DELAY
-        for attempt in range(retries):
+        backoff = self.BACKOFF_INITIAL_DELAY_MS
+        for attempt in range(tries):
             try:
                 response = self.make_request(payload, is_json=False)
                 return self.handle_plaintext_response(response)
             except GCMUnavailableException:
                 sleep_time = backoff / 2 + random.randrange(backoff)
                 time.sleep(float(sleep_time) / 1000)
-                if 2 * backoff < self.MAX_BACKOFF_DELAY:
+                if 2 * backoff < self.MAX_BACKOFF_DELAY_MS:
                     backoff *= 2
+                else:
+                    backoff = self.MAX_BACKOFF_DELAY_MS
 
-        raise IOError("Could not make request after %d attempts" % attempt)
+        raise IOError("Failed to make GCM request after %d attempts" % attempt)
 
-    def json_request(self, registration_ids, data=None, collapse_key=None,
-                        delay_while_idle=False, time_to_live=None, retries=5):
+    def request_json(self, registration_ids, data=None, collapse_key=None,
+                        delay_while_idle=False, time_to_live=None):
         """
-        Makes a JSON request to GCM servers
+        Makes a JSON request to GCM servers. Caller should parse response to handle
+        any ID resets, removals, and also the caller is responsible for retries.
 
+        :param time_to_live secs
         :param registration_ids: list of the registration ids
         :param data: dict mapping of key-value pairs of messages
-        :return dict of response body from Google including multicast_id, success, failure, canonical_ids, etc
+        :return custom response object that includes lists of successes, retry failures, canonical_ids, etc
         :raises GCMMissingRegistrationException: if the list of registration_ids exceeds 1000 items
         """
-
         if not registration_ids:
             raise GCMMissingRegistrationException("Missing registration_ids")
         if len(registration_ids) > 1000:
-            raise GCMTooManyRegIdsException("Exceded number of registration_ids")
+            raise GCMTooManyRegIdsException("Exceeded number of registration_ids")
+        if not data or len(data) == 0:
+            raise GCMException('no data to send')
 
-        attempt = 0
-        backoff = self.BACKOFF_INITIAL_DELAY
-        for attempt in range(retries):
-            payload = self.construct_payload(
-                registration_ids, data, collapse_key,
-                delay_while_idle, time_to_live
-            )
-            response = self.make_request(payload, is_json=True)
-            info = self.handle_json_response(response, registration_ids)
+        payload = self.construct_payload(
+            registration_ids, data, collapse_key,
+            delay_while_idle, time_to_live
+        )
+        response = self.make_request(payload, is_json=True)
+        return GCM_response_wrapper(response)
 
-            unsent_reg_ids = self.extract_unsent_reg_ids(info)
-            if unsent_reg_ids:
-                registration_ids = unsent_reg_ids
-                sleep_time = backoff / 2 + random.randrange(backoff)
-                time.sleep(float(sleep_time) / 1000)
-                if 2 * backoff < self.MAX_BACKOFF_DELAY:
-                    backoff *= 2
+class GCM_response_wrapper(object):
+    """
+    encapsulate the json response from GCM; useful for multicast requests.
+    You should iterate through 3 lists in this result:
+        * unregister any dead IDs from get_unregister_errors
+        * reset any replacement IDs returned from get_canonical_ids()
+        * resend messages that could not be sent (after exponential backoff time) from get_resend_ids()
+    """
+    def __init__(self, json_response):
+        self.my_json = json.loads(json_response)
+
+    def has_error(self):
+        return self.my_json['failure'] > 0
+
+    def has_canonical(self):
+        return self.my_json['canonical_ids'] > 0
+
+    def has_success(self):
+        return self.my_json['success'] > 0
+
+    def has_resends(self):
+        return self.has_error() and len(self._get_resends()) > 0
+
+    def get_successes(self, reg_ids):
+        """
+        @return list( success_id )
+        """
+        if not reg_ids or len(reg_ids) == 0:
+            return []
+        if not self.has_success():
+            return []
+
+        num_incoming = len(reg_ids)
+        num_results = len(self.my_json['results'])
+        if num_incoming != num_results:
+          print('expected number of incoming reg_ids: %i to equal number of results: %i' % (num_incoming, num_results))
+
+        successes = []
+        i = 0
+        for item in self.my_json['results']:
+            if item.has_key('message_id'):
+                if i < num_incoming:
+                    successes.append(reg_ids[i])
+                else:
+                    break
+            i += 1
+        return successes
+
+    def get_unregister_errors(self, reg_ids):
+        """
+        either not registered or invalid registration: remove these registration ids from further attempts.
+        @return list( invalid_reg_id )
+        """
+        if not reg_ids or len(reg_ids) == 0:
+            return []
+        if not self.has_error():
+            return []
+
+        num_incoming = len(reg_ids)
+        num_results = len(self.my_json['results'])
+        if num_incoming != num_results:
+          print('expected number of incoming reg_ids: %i to equal number of results: %i' % (num_incoming, num_results))
+
+        errors = []
+        i = 0
+        for item in self.my_json['results']:
+            if item.has_key('error') and (item['error'] == 'NotRegistered' or item['error'] == 'InvalidRegistration'):
+                if i < num_incoming:
+                    errors.append(reg_ids[i])
+                else:
+                    break
+            i += 1
+        return errors
+
+    def _get_resends(self):
+        """
+        Unavailable error means we need to resend after exponential backoff period
+        @return list( (line_num, error_msg) )
+        """
+        if not self.has_error():
+            return []
+
+        errors = []
+        i = 0
+        for item in self.my_json['results']:
+            if item.has_key('error') and item['error'] == 'Unavailable':
+                errors.append((i, item['error']))
+            i += 1
+        return errors
+
+    def get_resend_ids(self, reg_ids):
+        """
+        use error line numbers to select from provided list.
+        @return list( ids that should be resent )
+        """
+        if not reg_ids or len(reg_ids) == 0:
+            return []
+        num_incoming = len(reg_ids)
+        num_results = len(self.my_json['results'])
+        if num_incoming != num_results:
+            print('expected number of incoming reg_ids: %i to equal number of results: %i' % (num_incoming, num_results))
+
+        resends = self._get_resends()
+        ids = []
+        for (line_num, err) in resends:
+            if line_num < num_incoming:
+                ids.append(reg_ids[line_num])
             else:
                 break
+        return ids
 
-        return info
+    def get_canonical_ids(self, reg_ids):
+        """
+        get a list of replacement (canonical) registration ids.
+        @return list( (old_id, canonical_id) )
+        """
+        if not reg_ids or len(reg_ids) == 0:
+            return []
+        if not self.has_canonical():
+            return []
+
+        num_incoming = len(reg_ids)
+        num_results = len(self.my_json['results'])
+        if num_incoming != num_results:
+            print('expected number of incoming reg_ids: %i to equal number of results: %i' % (num_incoming, num_results))
+
+        canonical = []
+        i = 0
+        for item in self.my_json['results']:
+            if item.has_key('registration_id'):
+                if i < num_incoming:
+                    canonical.append((reg_ids[i], item['registration_id']))
+                else:
+                    break
+            i += 1
+        return canonical

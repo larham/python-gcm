@@ -12,43 +12,61 @@ def create_side_effect(returns):
         if isinstance(result, Exception):
             raise result
         return result
+
     return side_effect
 
 
 class GCMTest(unittest.TestCase):
-
     def setUp(self):
         self.gcm = GCM('123api')
         self.data = {
             'param1': '1',
             'param2': '2'
         }
-        self.response = {
+        self.mock_results_all_error = {
+            "multicast_id": 216,
+            "success": 0,
+            "failure": 3,
+            "canonical_ids": 0,
             'results': [
-                {'error': 'InvalidRegistration'},
-                {'error': 'NotRegistered'},
-                {'message_id': '54749687859', 'registration_id': '6969'},
-                {'message_id': '5456453453'},
-                {'error': 'NotRegistered'},
-                {'message_id': '123456778', 'registration_id': '07645'},
+                    {'error': 'Unavailable'},
+                    {"error": "InvalidRegistration"},
+                    {"error": "NotRegistered"}
             ]
         }
-        self.mock_response_1 = {
+        self.mock_results_all_success = {
+            "multicast_id": 216,
+            "success": 3,
+            "failure": 0,
+            "canonical_ids": 1,
             'results': [
-                {'error': 'Unavailable'},
-                {'error': 'Unavailable'},
+                    {'message_id': '5678'},
+                    {'message_id': '1234'},
+                    {"message_id": "1:2342", "registration_id": "32"},
             ]
         }
-        self.mock_response_2 = {
-            'results': [
-                {'error': 'Unavailable'},
-                {'message_id': '1234'}
-            ]
-        }
-        self.mock_response_3 = {
-            'results': [
-                {'message_id': '5678'},
-                {'message_id': '1234'}
+        self.mock_mixed_request_ids = ['4', '8', '15', '16', '23', '42']
+        self.mock_results_mixed = {
+            # Here are JSON results for 6 recipients (IDs 4, 8, 15, 16, 23, and 42 respectively) with 3 messages successfully processed, 1 canonical registration ID returned, and 3 errors:
+            #            In this example:
+            #            First message: success, not required.
+            #            Second message: should be resent (to registration ID 8).
+            #            Third message: had an unrecoverable error (maybe the value got corrupted in the database).
+            #            Fourth message: success, nothing required.
+            #            Fifth message: success, but the registration ID should be updated in the server database (from 23 to 32).
+            #            Sixth message: registration ID (42) should be removed from the server database because the application was uninstalled from the device.
+
+            "multicast_id": 216,
+            "success": 3,
+            "failure": 3,
+            "canonical_ids": 1,
+            "results": [
+                    {"message_id": "1:0408"},
+                    {"error": "Unavailable"},
+                    {"error": "InvalidRegistration"},
+                    {"message_id": "1:1516"},
+                    {"message_id": "1:2342", "registration_id": "32"},
+                    {"error": "NotRegistered"}
             ]
         }
         time.sleep = MagicMock()
@@ -86,14 +104,14 @@ class GCMTest(unittest.TestCase):
         reg_ids = range(1003)
         self.assertTrue(len(reg_ids) > 1000)
         with self.assertRaises(GCMTooManyRegIdsException):
-            self.gcm.json_request(registration_ids=reg_ids, data=self.data)
+            self.gcm.request_json(registration_ids=reg_ids, data=self.data)
 
     def test_missing_reg_id(self):
         with self.assertRaises(GCMMissingRegistrationException):
-            self.gcm.json_request(registration_ids=[], data=self.data)
+            self.gcm.request_json(registration_ids=[], data=self.data)
 
         with self.assertRaises(GCMMissingRegistrationException):
-            self.gcm.plaintext_request(registration_id=None, data=self.data)
+            self.gcm.request_plaintext(registration_id=None, data=self.data)
 
     def test_invalid_ttl(self):
         with self.assertRaises(GCMInvalidTtlException):
@@ -105,53 +123,6 @@ class GCMTest(unittest.TestCase):
             self.gcm.construct_payload(
                 registration_ids='1234', data=self.data, is_json=False, time_to_live=-10
             )
-
-    def test_group_response(self):
-        ids = ['123', '345', '678', '999', '1919', '5443']
-        error_group = group_response(self.response, ids, 'error')
-        self.assertEqual(error_group['NotRegistered'], ['345', '1919'])
-        self.assertEqual(error_group['InvalidRegistration'], ['123'])
-
-        canonical_group = group_response(self.response, ids, 'registration_id')
-        self.assertEqual(canonical_group['678'], '6969')
-        self.assertEqual(canonical_group['5443'], '07645')
-
-    def test_group_response_no_error(self):
-        ids = ['123', '345', '678']
-        response = {
-            'results': [
-                {'message_id': '346547676'},
-                {'message_id': '54749687859'},
-                {'message_id': '5456453453'},
-            ]
-        }
-        error_group = group_response(response, ids, 'error')
-        canonical_group = group_response(response, ids, 'registration_id')
-        self.assertEqual(error_group, None)
-        self.assertEqual(canonical_group, None)
-
-    def test_handle_json_response(self):
-        ids = ['123', '345', '678', '999', '1919', '5443']
-        res = self.gcm.handle_json_response(self.response, ids)
-
-        self.assertIn('errors', res)
-        self.assertIn('NotRegistered', res['errors'])
-        self.assertIn('canonical', res)
-        self.assertIn('678', res['canonical'])
-
-    def test_handle_json_response_no_error(self):
-        ids = ['123', '345', '678']
-        response = {
-            'results': [
-                {'message_id': '346547676'},
-                {'message_id': '54749687859'},
-                {'message_id': '5456453453'},
-            ]
-        }
-        res = self.gcm.handle_json_response(response, ids)
-
-        self.assertNotIn('errors', res)
-        self.assertNotIn('canonical', res)
 
     def test_handle_plaintext_response(self):
         response = 'Error=NotRegistered'
@@ -170,7 +141,7 @@ class GCMTest(unittest.TestCase):
         returns = [GCMUnavailableException(), GCMUnavailableException(), 'id=123456789']
 
         self.gcm.make_request = MagicMock(side_effect=create_side_effect(returns))
-        res = self.gcm.plaintext_request(registration_id='1234', data=self.data)
+        res = self.gcm.request_plaintext(registration_id='1234', data=self.data)
 
         self.assertIsNone(res)
         self.assertEqual(self.gcm.make_request.call_count, 3)
@@ -180,43 +151,66 @@ class GCMTest(unittest.TestCase):
 
         self.gcm.make_request = MagicMock(side_effect=create_side_effect(returns))
         with self.assertRaises(IOError):
-            self.gcm.plaintext_request(registration_id='1234', data=self.data, retries=2)
+            self.gcm.request_plaintext(registration_id='1234', data=self.data, tries=2)
 
         self.assertEqual(self.gcm.make_request.call_count, 2)
 
-    def test_retry_json_request_ok(self):
-        returns = [self.mock_response_1, self.mock_response_2, self.mock_response_3]
+    def test_json_request_ok(self):
+        returns = [self.mock_results_all_success]
+        json_returns = []
+        for a_return in returns:
+            json_returns.append(json.dumps(a_return))
 
-        self.gcm.make_request = MagicMock(side_effect=create_side_effect(returns))
-        res = self.gcm.json_request(registration_ids=['1', '2'], data=self.data)
+        self.gcm.make_request = MagicMock(side_effect=create_side_effect(json_returns))
+        registration_ids = ['abc', 'def', 'ghi']
+        res = self.gcm.request_json(registration_ids=registration_ids, data=self.data)
 
-        self.assertEqual(self.gcm.make_request.call_count, 3)
-        self.assertNotIn('errors', res)
+        self.assertFalse(res.has_error())
+        self.assertFalse(res.has_resends())
+        self.assertTrue(res.has_canonical())
+        self.assertTrue(len(res.get_canonical_ids(registration_ids)) == 1)
+        self.assertEqual('ghi', res.get_canonical_ids(registration_ids)[0][0])
 
-    def test_retry_json_request_fail(self):
-        returns = [self.mock_response_1, self.mock_response_2, self.mock_response_3]
-
-        self.gcm.make_request = MagicMock(side_effect=create_side_effect(returns))
-        res = self.gcm.json_request(registration_ids=['1', '2'], data=self.data, retries=2)
-
-        self.assertEqual(self.gcm.make_request.call_count, 2)
-        self.assertIn('Unavailable', res['errors'])
-        self.assertEqual(res['errors']['Unavailable'][0], '1')
+    def test_json_request_fail(self):
+        returns = [self.mock_results_all_error]
+        json_returns = []
+        for a_return in returns:
+            json_returns.append(json.dumps(a_return))
+        self.gcm.make_request = MagicMock(side_effect=create_side_effect(json_returns))
+        registration_ids = ['abc', 'def', 'ghi']
+        res = self.gcm.request_json(registration_ids=registration_ids, data=self.data)
+        self.assertFalse(res.has_success())
+        self.assertTrue(res.has_error())
+        self.assertTrue(res.has_resends())
+        self.assertFalse(res.has_canonical())
 
     def test_retry_exponential_backoff(self):
         returns = [GCMUnavailableException(), GCMUnavailableException(), 'id=123456789']
 
         self.gcm.make_request = MagicMock(side_effect=create_side_effect(returns))
-        self.gcm.plaintext_request(registration_id='1234', data=self.data)
+        self.gcm.request_plaintext(registration_id='1234', data=self.data)
 
         # time.sleep is actually mock object.
         self.assertEqual(time.sleep.call_count, 2)
-        backoff = self.gcm.BACKOFF_INITIAL_DELAY
+        backoff = self.gcm.BACKOFF_INITIAL_DELAY_MS
         for arg in time.sleep.call_args_list:
             sleep_time = int(arg[0][0] * 1000)
             self.assertTrue(backoff / 2 <= sleep_time <= backoff * 3 / 2)
-            if 2 * backoff < self.gcm.MAX_BACKOFF_DELAY:
+            if 2 * backoff < self.gcm.MAX_BACKOFF_DELAY_MS:
                 backoff *= 2
+
+    def test_json_wrapper(self):
+        resp = GCM_response_wrapper(json.dumps(self.mock_results_mixed))
+        self.assertTrue(resp.has_error())
+        self.assertTrue(resp.has_canonical())
+        self.assertTrue(resp.has_resends())
+        self.assertTrue(resp.has_success())
+        self.assertEquals(len(resp.get_unregister_errors(self.mock_mixed_request_ids)), 2)
+        self.assertEquals(len(resp.get_canonical_ids(self.mock_mixed_request_ids)), 1)
+        self.assertEquals(len(resp.get_resend_ids(self.mock_mixed_request_ids)), 1)
+        self.assertRaises(resp.get_unregister_errors([]))
+        self.assertRaises(resp.get_canonical_ids([]))
+        self.assertRaises(resp.get_resend_ids([]))
 
 if __name__ == '__main__':
     unittest.main()
