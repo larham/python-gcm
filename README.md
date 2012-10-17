@@ -46,7 +46,9 @@ except GCMUnavailableException:
 ```
 
 JSON multicast request
+
 For multicasting the same notification to many users, the caller should employ a retry loop.
+
 See client_sample.py, used below as send_notification(). Results from each iteration are processed
 by the client.
 
@@ -65,8 +67,9 @@ Read more on response errors [here](http://developer.android.com/guide/google/gc
 
 There are two categories of errors:
 
-GCMRetriableException # the ones you can retry
-GCMNoRetryException   # the fatal ones (most)
+* GCMRetriableException # the ones you can retry
+
+* GCMNoRetryException   # the fatal ones (most)
 
 * GCMMalformedJsonException
 * GCMConnectionException
