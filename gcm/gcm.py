@@ -12,6 +12,7 @@ GCM_URL = 'https://android.googleapis.com/gcm/send'
 class GCMException(Exception): pass
 class GCMNoRetryException(Exception): pass
 class GCMRetriableException(Exception): pass
+
 class GCMMalformedJsonException(GCMNoRetryException): pass
 class GCMConnectionException(GCMRetriableException): pass
 class GCMAuthenticationException(GCMNoRetryException): pass

@@ -13,17 +13,17 @@ Basic
 gcm = GCM(API_KEY)
 data = {'param1': 'value1', 'param2': 'value2'}
 
-# Plaintext request
-gcm.plaintext_request(registration_id=reg_id, data=data)
+# Plaintext request, handles retry loops internally
+gcm.request_plaintext(registration_id=reg_id, data=data)
 
-# JSON request
+# JSON request; caller should handle retry loops (see multicast below)
 reg_ids = ['12', '34', '69']
-response = gcm.json_request(registration_ids=reg_ids, data=data)
+gcm_response = gcm.request_json(registration_ids=reg_ids, data=data)
 
 # Extra arguments
-res = gcm.json_request(
+gcm_response = gcm.request_json(
     registration_ids=reg_ids, data=data,
-    collapse_key='uptoyou', delay_while_idle=True, time_to_live=3600
+    collapse_key='up_to_you', delay_while_idle=True, time_to_live=3600
 )
 ```
 
@@ -32,7 +32,7 @@ Error handling
 # Plaintext request
 reg_id = '12345'
 try:
-    canonical_id = gcm.plaintext_request(registration_id=reg_id, data=data)
+    canonical_id = gcm.request_plaintext(registration_id=reg_id, data=data)
     if canonical_id:
         # Repace reg_id with canonical_id in your database
         entry = entity.filter(registration_id=reg_id)
@@ -43,31 +43,30 @@ except GCMNotRegisteredException:
     entity.filter(registration_id=reg_id).delete()
 except GCMUnavailableException:
     # Resent the message
+```
 
-# JSON request
-reg_ids = ['12', '34', '69']
-response = gcm.json_request(registration_ids=reg_ids, data=data)
+JSON multicast request
+For multicasting the same notification to many users, the caller should employ a retry loop.
+See client_sample.py, used below as send_notification(). Results from each iteration are processed
+by the client.
 
-# Handling errors
-if 'errors' in response:
-    for error, reg_ids in response['errors'].items():
-        # Check for errors and act accordingly
-        if error is 'NotRegistered':
-            # Remove reg_ids from database
-            for reg_id in reg_ids:
-                entity.filter(registration_id=reg_id).delete()
-if 'canonical' in response:
-    for canonical_id, reg_id in response['canonical'].items():
-        # Repace reg_id with canonical_id in your database
-        entry = entity.filter(registration_id=reg_id)
-        entry.registration_id = canonical_id
-        entry.save()
+```python
+
+ids = ['12', '34', '69'] # real gcm registration ids are guid strings
+devices_by_reg_id = dict(12=device12, 34=device34, 69=device69) # where device<id> indicates some database record
+send_notification(ids, devices_by_reg_id, data)
+
+
 ```
 
 Exceptions
 ------------
 Read more on response errors [here](http://developer.android.com/guide/google/gcm/gcm.html#success)
 
+There are two categories of errors:
+
+GCMRetriableException # the ones you can retry
+GCMNoRetryException   # the fatal ones (most)
 
 * GCMMalformedJsonException
 * GCMConnectionException
@@ -82,4 +81,3 @@ Read more on response errors [here](http://developer.android.com/guide/google/gc
 * GCMInvalidRegistrationException
 * GCMUnavailableException
 
-![Gotta catch them all](http://t.qkme.me/35gjhs.jpg)
