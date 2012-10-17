@@ -54,8 +54,8 @@ by the client.
 
 ```python
 
-ids = ['12', '34', '69'] # real gcm registration ids are guid strings
-devices_by_reg_id = dict(12=device12, 34=device34, 69=device69) # where device<id> indicates some database record
+ids = ['a12', 'b34', 'c56'] # real gcm registration ids are guid strings
+devices_by_reg_id = dict(a12=device12, b34=device34, c56=device56) # where device<id> indicates some database record
 send_notification(ids, devices_by_reg_id, data)
 
 
