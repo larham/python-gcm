@@ -56,6 +56,7 @@ by the client.
 
 ids = ['a12', 'b34', 'c56'] # real gcm registration ids are guid strings
 devices_by_reg_id = dict(a12=device12, b34=device34, c56=device56) # where device<id> indicates some database record
+from client_sample import send_notification
 send_notification(ids, devices_by_reg_id, data)
 
 

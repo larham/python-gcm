@@ -43,14 +43,14 @@ def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
             else:
                 return True # we're done--successes already recorded
 
-        except GCMRetriableException as e:
+        except GCMRetriableException:
             if i < max_attempts - 1:
                 time.sleep(0.20) # TODO back off exponentially
             else:
                 break
 
         except Exception as e:
-            print('problem with gcm')
+            print('problem with gcm: %s' % str(e))
             break
 
     # failed if we got here.
