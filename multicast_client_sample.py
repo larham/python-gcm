@@ -1,5 +1,6 @@
 from datetime import datetime
 import time
+from django.utils.encoding import smart_str
 from gcm import GCM
 from gcm.gcm import GCMRetriableException
 
@@ -12,13 +13,16 @@ def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
     Since the gcm system provides feedback en masse, we record success/failure of a given device
     within this routine, as opposed to allowing the caller to record (just one) result based on
     the returned True/False.
+    @param ids: list of keys to the dictionary devices_by_reg_id
+    @param devices_by_reg_id: dictionary of device (mobile/tablet etc.) that will receive notification
+    @param payload: message to send
     @return True if ALL ids were handled by GCM (success or failure, but handled), False otherwise (such as a network failure)
     """
 
-    if len(ids) == 0:
+    if not ids or not payload or not devices_by_reg_id:
         return False
 
-    # collapse no messages together--try to send all to device when device comes back online
+    # assume NO collapsing of messages together--try to send all to device when device comes back online.
     # note that collapse_key cannot be None if time_to_live is not None
     collapse_key = str(datetime.now())
     delay_while_idle = False
@@ -50,10 +54,10 @@ def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
                 break
 
         except Exception as e:
-            print('problem with gcm: %s' % str(e))
+            print('problem with gcm: %s' % smart_str(e))
             break
 
-    # failed if we got here.
+    # attempt failed if we got here.
     for fail_id in ids:
         if devices_by_reg_id.has_key(fail_id):
             d = devices_by_reg_id[fail_id]
