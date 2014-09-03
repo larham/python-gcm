@@ -8,7 +8,7 @@ Usage
 ------------
 RTFM [here](http://developer.android.com/guide/google/gcm/gcm.html)
         
-Basic
+Basic interaction sample, one message to one destination at a time
 ```python
 gcm = GCM(API_KEY)
 data = {'param1': 'value1', 'param2': 'value2'}
@@ -46,11 +46,14 @@ except GCMUnavailableException:
 ```
 
 JSON multicast request
+---------------------
 
-For multicasting the same notification to many users, the caller should employ a retry loop.
+For multicasting the same notification to many devices, GCM allows up to 1000 device targets at a time.
+However, the results for each message are cached and provided within a result set after all message deliveries
+ have been attempted.
 
-See client_sample.py, used below as send_notification(). Results from each iteration are processed
-by the client.
+See client_sample.py, used below via send_notification(). Results from each message are processed
+by the client, and retried as necessary.
 
 ```python
 
@@ -66,11 +69,12 @@ Exceptions
 ------------
 Read more on response errors [here](http://developer.android.com/guide/google/gcm/gcm.html#success)
 
-There are two categories of errors:
+There are two superclasses for errors:
 
 * GCMRetriableException # the ones you can retry
-
 * GCMNoRetryException   # the fatal ones (most)
+
+And various concrete exceptions:
 
 * GCMMalformedJsonException
 * GCMConnectionException
