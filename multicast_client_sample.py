@@ -4,7 +4,7 @@ from django.utils.encoding import smart_str
 from gcm import GCM
 from gcm.gcm import GCMRetriableException
 
-MY_EXCELLENT_GCM_KEY = 'my excellent gcm key'   # this would be your key
+MY_EXCELLENT_GCM_KEY = 'my excellent gcm key'   # replace with your key, or supply it via another means
 
 
 def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
