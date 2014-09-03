@@ -10,10 +10,10 @@ MY_EXCELLENT_GCM_KEY = 'my excellent gcm key'   # this would be your key
 def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
     """
     Send a message to multiple devices via Google GCM system's multicast feature.
-    Since the gcm system provides feedback en masse, we record success/failure of a given device
-    within this routine, as opposed to allowing the caller to record (just one) result based on
-    the returned True/False.
-    @param ids: list of keys to the dictionary devices_by_reg_id
+    Since the gcm system provides feedback as a summary after attempting all messages,
+     we record success/failure of a given device
+    within this routine.
+    @param ids: list of keys within devices_by_reg_id
     @param devices_by_reg_id: dictionary of device (mobile/tablet etc.) that will receive notification
     @param payload: message to send
     @return True if ALL ids were handled by GCM (success or failure, but handled), False otherwise (such as a network failure)
@@ -38,14 +38,12 @@ def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
             should_retry = gcm_response.has_resends()
             if should_retry:
                 ids = gcm_response.get_resend_ids(ids)  # reset ids for next try
-
-            if should_retry:
                 if i < max_attempts - 1:
                     time.sleep(0.20) # TODO back off exponentially
                 else:
-                    break # record failures below
+                    break  # record failures below
             else:
-                return True # we're done--successes already recorded
+                return True  # FINISHED!  successes already recorded
 
         except GCMRetriableException:
             if i < max_attempts - 1:
@@ -57,7 +55,7 @@ def send_notification(ids, devices_by_reg_id, payload, max_attempts=3):
             print('problem with gcm: %s' % smart_str(e))
             break
 
-    # attempt failed if we got here.
+    # the attempt failed if we got here.
     for fail_id in ids:
         if devices_by_reg_id.has_key(fail_id):
             d = devices_by_reg_id[fail_id]
